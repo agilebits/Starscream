@@ -277,16 +277,25 @@ open class FoundationStream : NSObject, WSStream, StreamDelegate  {
         var domain = outputStream.property(forKey: kCFStreamSSLPeerName as Stream.PropertyKey) as! String?
         if domain == nil,
             let sslContextOut = CFWriteStreamCopyProperty(outputStream, CFStreamPropertyKey(rawValue: kCFStreamPropertySSLContext)) as! SSLContext? {
-            var peerNameLen: Int = 0
-            SSLGetPeerDomainNameLength(sslContextOut, &peerNameLen)
-            var peerName = Data(count: peerNameLen)
-            let _ = peerName.withUnsafeMutableBytes { (peerNamePtr: UnsafeMutablePointer<Int8>) in
-                SSLGetPeerDomainName(sslContextOut, peerNamePtr, &peerNameLen)
-            }
-            if let peerDomain = String(bytes: peerName, encoding: .utf8), peerDomain.count > 0 {
-                domain = peerDomain
-            }
-        }
+			var peerNameLen: Int = 0
+			SSLGetPeerDomainNameLength(sslContextOut, &peerNameLen)
+			var peerName = Data(count: peerNameLen)
+			do {
+				let _ = try peerName.withUnsafeMutableBytes { (peerNamePtr) in
+					guard let bytes = peerNamePtr.baseAddress, peerNamePtr.count > 0 else {
+						throw ByteError()
+					}
+					let dataAccessor = bytes.assumingMemoryBound(to: Int8.self)
+					SSLGetPeerDomainName(sslContextOut, dataAccessor, &peerNameLen)
+				}
+				if let peerDomain = String(bytes: peerName, encoding: .utf8), peerDomain.count > 0 {
+					domain = peerDomain
+				}
+			}
+			catch {
+				return (nil, nil)
+			}
+		}
         
         return (trust, domain)
     }
@@ -889,8 +898,8 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
         
         if let acceptKey = headers[headerWSAcceptName.lowercased()] {
             if acceptKey.count > 0 {
-                if headerSecKey.count > 0 {
-                    let sha = "\(headerSecKey)258EAFA5-E914-47DA-95CA-C5AB0DC85B11".sha1Base64()
+                if headerSecKey.count > 0,
+					let sha = "\(headerSecKey)258EAFA5-E914-47DA-95CA-C5AB0DC85B11".sha1Base64() {
                     if sha != acceptKey as String {
                         return -1
                     }
@@ -1321,11 +1330,22 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
 }
 
 private extension String {
-    func sha1Base64() -> String {
+    func sha1Base64() -> String? {
         let data = self.data(using: String.Encoding.utf8)!
         var digest = [UInt8](repeating: 0, count:Int(CC_SHA1_DIGEST_LENGTH))
-        data.withUnsafeBytes { _ = CC_SHA1($0, CC_LONG(data.count), &digest) }
-        return Data(bytes: digest).base64EncodedString()
+		do {
+			try data.withUnsafeBytes { (bytePointer) in
+				guard let bytes = bytePointer.baseAddress, bytePointer.count > 0 else {
+					throw ByteError()
+				}
+				let dataAccessor = bytes.assumingMemoryBound(to: UInt8.self)
+				_ = CC_SHA1(dataAccessor, CC_LONG(data.count), &digest)
+			}
+			return Data(digest).base64EncodedString()
+		}
+		catch {
+			return nil
+		}
     }
 }
 

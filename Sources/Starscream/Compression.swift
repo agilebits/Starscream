@@ -29,6 +29,8 @@
 import Foundation
 import zlib
 
+struct ByteError: Swift.Error {}
+
 class Decompressor {
     private var strm = z_stream()
     private var buffer = [UInt8](repeating: 0, count: 0x2000)
@@ -56,8 +58,12 @@ class Decompressor {
     }
 
     func decompress(_ data: Data, finish: Bool) throws -> Data {
-        return try data.withUnsafeBytes { (bytes:UnsafePointer<UInt8>) -> Data in
-            return try decompress(bytes: bytes, count: data.count, finish: finish)
+        return try data.withUnsafeBytes { (bytePointer) -> Data in
+			guard let bytes = bytePointer.baseAddress, bytePointer.count > 0 else {
+				throw ByteError()
+			}
+			let dataAccessor = bytes.assumingMemoryBound(to: UInt8.self)
+            return try decompress(bytes: dataAccessor, count: data.count, finish: finish)
         }
     }
 
@@ -137,31 +143,39 @@ class Compressor {
     func compress(_ data: Data) throws -> Data {
         var compressed = Data()
         var res:CInt = 0
-        data.withUnsafeBytes { (ptr:UnsafePointer<UInt8>) -> Void in
-            strm.next_in = UnsafeMutablePointer<UInt8>(mutating: ptr)
-            strm.avail_in = CUnsignedInt(data.count)
+		do {
+			try data.withUnsafeBytes { (ptr) in
+				guard let bytes = ptr.baseAddress, ptr.count > 0 else {
+					throw ByteError()
+				}
+				let dataAccessor = bytes.assumingMemoryBound(to: UInt8.self)
+				strm.next_in = UnsafeMutablePointer<UInt8>(mutating: dataAccessor)
+				strm.avail_in = CUnsignedInt(data.count)
 
-            repeat {
-                strm.next_out = UnsafeMutablePointer<UInt8>(&buffer)
-                strm.avail_out = CUnsignedInt(buffer.count)
+				repeat {
+					strm.next_out = UnsafeMutablePointer<UInt8>(&buffer)
+					strm.avail_out = CUnsignedInt(buffer.count)
 
-                res = deflate(&strm, Z_SYNC_FLUSH)
+					res = deflate(&strm, Z_SYNC_FLUSH)
 
-                let byteCount = buffer.count - Int(strm.avail_out)
-                compressed.append(buffer, count: byteCount)
-            }
-            while res == Z_OK && strm.avail_out == 0
+					let byteCount = buffer.count - Int(strm.avail_out)
+					compressed.append(buffer, count: byteCount)
+				}
+					while res == Z_OK && strm.avail_out == 0
+			}
 
-        }
+			guard res == Z_OK && strm.avail_out > 0
+				|| (res == Z_BUF_ERROR && Int(strm.avail_out) == buffer.count)
+				else {
+					throw WSError(type: .compressionError, message: "Error on compressing", code: 0)
+			}
 
-        guard res == Z_OK && strm.avail_out > 0
-            || (res == Z_BUF_ERROR && Int(strm.avail_out) == buffer.count)
-        else {
-            throw WSError(type: .compressionError, message: "Error on compressing", code: 0)
-        }
-
-        compressed.removeLast(4)
-        return compressed
+			compressed.removeLast(4)
+			return compressed
+		}
+		catch {
+			throw ByteError()
+		}
     }
 
     private func teardownDeflate() {
