@@ -22,7 +22,6 @@
 import Foundation
 import CoreFoundation
 import CommonCrypto
-import AgileLibrary
 
 public let WebsocketDidConnectNotification = "WebsocketDidConnectNotification"
 public let WebsocketDidDisconnectNotification = "WebsocketDidDisconnectNotification"
@@ -732,14 +731,14 @@ open class WebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDelega
     /**
      Disconnect the stream object and notifies the delegate.
      */
-    private func disconnectStream(_ error: Error?, runDelegate: Bool = true) {
-        if error == nil {
-            writeQueue.waitUntilAllOperationsAreFinished()
-        } else {
-            writeQueue.cancelAllOperations()
-        }
-        
-        mutex.lock()
+	private func disconnectStream(_ error: Error?, runDelegate: Bool = true) {
+		if error != nil {
+			writeQueue.cancelAllOperations()
+		}
+
+		writeQueue.waitUntilAllOperationsAreFinished()
+
+		mutex.lock()
         cleanupStream()
         connected = false
         mutex.unlock()
@@ -788,7 +787,7 @@ open class WebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDelega
                 }
                 let buffer = UnsafeRawPointer((work as NSData).bytes).assumingMemoryBound(to: UInt8.self)
                 let length = work.count
-                if !connected {
+                if !isConnected {
                     processTCPHandshake(buffer, bufferLen: length)
                 } else {
                     processRawMessagesInBuffer(buffer, bufferLen: length)
@@ -1275,6 +1274,7 @@ open class WebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDelega
                 }
                 let stream = self.stream
                 let writeBuffer = UnsafeRawPointer(frame!.bytes+total).assumingMemoryBound(to: UInt8.self)
+				guard self.isConnected else { return }
                 let len = stream.write(data: Data(bytes: writeBuffer, count: offset-total))
                 if len <= 0 {
                     self.doDisconnect(WSError(type: .outputStreamWriteError, message: "output stream had an error during write", code: 0))
@@ -1320,11 +1320,13 @@ open class WebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDelega
     // MARK: - Deinit
 
     deinit {
-        mutex.lock()
+		writeQueue.cancelAllOperations()
+		writeQueue.waitUntilAllOperationsAreFinished()
+
+		mutex.lock()
         readyToWrite = false
         cleanupStream()
         mutex.unlock()
-        writeQueue.cancelAllOperations()
     }
 
 }
