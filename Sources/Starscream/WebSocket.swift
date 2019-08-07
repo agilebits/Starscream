@@ -22,6 +22,7 @@
 import Foundation
 import CoreFoundation
 import CommonCrypto
+import AgileLibrary
 
 public let WebsocketDidConnectNotification = "WebsocketDidConnectNotification"
 public let WebsocketDidDisconnectNotification = "WebsocketDidDisconnectNotification"
