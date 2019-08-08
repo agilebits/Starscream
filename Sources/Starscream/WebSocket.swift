@@ -334,16 +334,16 @@ public protocol WebSocketPongDelegate: class {
 
 // A Delegate with more advanced info on messages and connection etc.
 public protocol WebSocketAdvancedDelegate: class {
-    func websocketDidConnect(socket: SSWebSocket)
-    func websocketDidDisconnect(socket: SSWebSocket, error: Error?)
-    func websocketDidReceiveMessage(socket: SSWebSocket, text: String, response: SSWebSocket.WSResponse)
-    func websocketDidReceiveData(socket: SSWebSocket, data: Data, response: SSWebSocket.WSResponse)
-    func websocketHttpUpgrade(socket: SSWebSocket, request: String)
-    func websocketHttpUpgrade(socket: SSWebSocket, response: String)
+    func websocketDidConnect(socket: WebSocket)
+    func websocketDidDisconnect(socket: WebSocket, error: Error?)
+    func websocketDidReceiveMessage(socket: WebSocket, text: String, response: WebSocket.WSResponse)
+    func websocketDidReceiveData(socket: WebSocket, data: Data, response: WebSocket.WSResponse)
+    func websocketHttpUpgrade(socket: WebSocket, request: String)
+    func websocketHttpUpgrade(socket: WebSocket, response: String)
 }
 
 
-open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDelegate {
+open class WebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDelegate {
 
     public enum OpCode : UInt8 {
         case continueFrame = 0x0
@@ -732,14 +732,14 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
     /**
      Disconnect the stream object and notifies the delegate.
      */
-    private func disconnectStream(_ error: Error?, runDelegate: Bool = true) {
-        if error == nil {
-            writeQueue.waitUntilAllOperationsAreFinished()
-        } else {
-            writeQueue.cancelAllOperations()
-        }
-        
-        mutex.lock()
+	private func disconnectStream(_ error: Error?, runDelegate: Bool = true) {
+		if error != nil {
+			writeQueue.cancelAllOperations()
+		}
+
+		writeQueue.waitUntilAllOperationsAreFinished()
+
+		mutex.lock()
         cleanupStream()
         connected = false
         mutex.unlock()
@@ -788,7 +788,7 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
                 }
                 let buffer = UnsafeRawPointer((work as NSData).bytes).assumingMemoryBound(to: UInt8.self)
                 let length = work.count
-                if !connected {
+                if !isConnected {
                     processTCPHandshake(buffer, bufferLen: length)
                 } else {
                     processRawMessagesInBuffer(buffer, bufferLen: length)
@@ -1033,7 +1033,7 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
                 if payloadLen == 1 {
                     closeCode = CloseCode.protocolError.rawValue
                 } else if payloadLen > 1 {
-                    closeCode = SSWebSocket.readUint16(baseAddress, offset: offset)
+                    closeCode = WebSocket.readUint16(baseAddress, offset: offset)
                     if closeCode < 1000 || (closeCode > 1003 && closeCode < 1007) || (closeCode > 1013 && closeCode < 3000) {
                         closeCode = CloseCode.protocolError.rawValue
                     }
@@ -1049,10 +1049,10 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
             }
             var dataLength = UInt64(payloadLen)
             if dataLength == 127 {
-                dataLength = SSWebSocket.readUint64(baseAddress, offset: offset)
+                dataLength = WebSocket.readUint64(baseAddress, offset: offset)
                 offset += MemoryLayout<UInt64>.size
             } else if dataLength == 126 {
-                dataLength = UInt64(SSWebSocket.readUint16(baseAddress, offset: offset))
+                dataLength = UInt64(WebSocket.readUint16(baseAddress, offset: offset))
                 offset += MemoryLayout<UInt16>.size
             }
             if bufferLen < offset || UInt64(bufferLen - offset) < dataLength {
@@ -1216,7 +1216,7 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
     private func writeError(_ code: UInt16) {
         let buf = NSMutableData(capacity: MemoryLayout<UInt16>.size)
         let buffer = UnsafeMutableRawPointer(mutating: buf!.bytes).assumingMemoryBound(to: UInt8.self)
-        SSWebSocket.writeUint16(buffer, offset: 0, value: code)
+        WebSocket.writeUint16(buffer, offset: 0, value: code)
         dequeueWrite(Data(bytes: buffer, count: MemoryLayout<UInt16>.size), code: .connectionClose)
     }
 
@@ -1251,11 +1251,11 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
                 buffer[1] = CUnsignedChar(dataLength)
             } else if dataLength <= Int(UInt16.max) {
                 buffer[1] = 126
-                SSWebSocket.writeUint16(buffer, offset: offset, value: UInt16(dataLength))
+                WebSocket.writeUint16(buffer, offset: offset, value: UInt16(dataLength))
                 offset += MemoryLayout<UInt16>.size
             } else {
                 buffer[1] = 127
-                SSWebSocket.writeUint64(buffer, offset: offset, value: UInt64(dataLength))
+                WebSocket.writeUint64(buffer, offset: offset, value: UInt64(dataLength))
                 offset += MemoryLayout<UInt64>.size
             }
             buffer[1] |= self.MaskMask
@@ -1275,6 +1275,7 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
                 }
                 let stream = self.stream
                 let writeBuffer = UnsafeRawPointer(frame!.bytes+total).assumingMemoryBound(to: UInt8.self)
+				guard self.isConnected else { return }
                 let len = stream.write(data: Data(bytes: writeBuffer, count: offset-total))
                 if len <= 0 {
                     self.doDisconnect(WSError(type: .outputStreamWriteError, message: "output stream had an error during write", code: 0))
@@ -1283,9 +1284,9 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
                     total += len
                 }
                 if total >= offset {
-                    if let callback = writeCompletion {
+                    if let _ = writeCompletion {
                         self.callbackQueue.async {
-                            callback()
+                            writeCompletion?()
                         }
                     }
 
@@ -1320,11 +1321,13 @@ open class SSWebSocket : NSObject, StreamDelegate, WebSocketClient, WSStreamDele
     // MARK: - Deinit
 
     deinit {
-        mutex.lock()
+		writeQueue.cancelAllOperations()
+		writeQueue.waitUntilAllOperationsAreFinished()
+
+		mutex.lock()
         readyToWrite = false
         cleanupStream()
         mutex.unlock()
-        writeQueue.cancelAllOperations()
     }
 
 }
