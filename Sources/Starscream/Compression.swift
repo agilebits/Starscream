@@ -86,10 +86,12 @@ class Decompressor {
         strm.avail_in = CUnsignedInt(count)
 
         repeat {
-            strm.next_out = UnsafeMutablePointer<UInt8>(&buffer)
-            strm.avail_out = CUnsignedInt(buffer.count)
+			buffer.withUnsafeMutableBytes { (bufferPtr) in
+				strm.next_out = bufferPtr.bindMemory(to: UInt8.self).baseAddress
+				strm.avail_out = CUnsignedInt(bufferPtr.count)
 
-            res = inflate(&strm, 0)
+				res = inflate(&strm, 0)
+			}
 
             let byteCount = buffer.count - Int(strm.avail_out)
             out.append(buffer, count: byteCount)
@@ -153,10 +155,12 @@ class Compressor {
 				strm.avail_in = CUnsignedInt(data.count)
 
 				repeat {
-					strm.next_out = UnsafeMutablePointer<UInt8>(&buffer)
-					strm.avail_out = CUnsignedInt(buffer.count)
-
-					res = deflate(&strm, Z_SYNC_FLUSH)
+					buffer.withUnsafeMutableBytes { (bufferPtr) in
+						strm.next_out = bufferPtr.bindMemory(to: UInt8.self).baseAddress
+						strm.avail_out = CUnsignedInt(bufferPtr.count)
+						
+						res = deflate(&strm, Z_SYNC_FLUSH)
+					}
 
 					let byteCount = buffer.count - Int(strm.avail_out)
 					compressed.append(buffer, count: byteCount)
